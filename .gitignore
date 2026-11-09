@@ -1,0 +1,22 @@
+/bin/
+*.exe
+*.test
+*.out
+.env
+.idea/
+.vscode/
+
+# Binary from `go build ./cmd/wallet` on Linux/macOS
+/wallet
+
+# Coverage reports
+coverage.*
+*.coverprofile
+
+# Env file variants (keep an example file in git)
+.env.*
+!.env.example
+
+# OS junk
+.DS_Store
+Thumbs.db
