@@ -23,10 +23,10 @@ func NewTransactionRepository(q querier) *TransactionRepository {
 func (r *TransactionRepository) Create(ctx context.Context, tx *domain.Transaction) error {
 	_, err := r.q.Exec(ctx,
 		`INSERT INTO transactions
-		   (id, idempotency_key, type, amount, currency, from_wallet_id, to_wallet_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		   (id, idempotency_key, type, amount, currency, from_wallet_id, to_wallet_id, note, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		tx.ID, tx.IdempotencyKey, string(tx.Type), tx.Amount, string(tx.Currency),
-		nullable(tx.FromWalletID), nullable(tx.ToWalletID), tx.CreatedAt,
+		nullable(tx.FromWalletID), nullable(tx.ToWalletID), tx.Note, tx.CreatedAt,
 	)
 	if code, constraint := pgCode(err); code == codeUniqueViolation && constraint == "transactions_idempotency_key_key" {
 		return domain.ErrDuplicateIdempotencyKey
@@ -55,9 +55,9 @@ func (r *TransactionRepository) FindByIdempotencyKey(ctx context.Context, key st
 		fromID, toID *string
 	)
 	err := r.q.QueryRow(ctx,
-		`SELECT id, idempotency_key, type, amount, currency, from_wallet_id, to_wallet_id, created_at
+		`SELECT id, idempotency_key, type, amount, currency, from_wallet_id, to_wallet_id, note, created_at
 		   FROM transactions WHERE idempotency_key = $1`, key,
-	).Scan(&tx.ID, &tx.IdempotencyKey, &typ, &tx.Amount, &cur, &fromID, &toID, &tx.CreatedAt)
+	).Scan(&tx.ID, &tx.IdempotencyKey, &typ, &tx.Amount, &cur, &fromID, &toID, &tx.Note, &tx.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrTransactionNotFound
 	}
@@ -78,11 +78,46 @@ func (r *TransactionRepository) FindByIdempotencyKey(ctx context.Context, key st
 	return &tx, nil
 }
 
-func (r *TransactionRepository) ListEntries(ctx context.Context, walletID string, limit, offset int) ([]domain.Entry, error) {
-	return r.queryEntries(ctx,
-		`SELECT id, transaction_id, wallet_id, amount, balance_after, created_at
-		   FROM ledger_entries WHERE wallet_id = $1
-		  ORDER BY id DESC LIMIT $2 OFFSET $3`, walletID, limit, offset)
+func (r *TransactionRepository) ListEntries(ctx context.Context, walletID string, q port.EntryQuery) ([]domain.HistoryEntry, error) {
+	filter := ""
+	switch q.Direction {
+	case domain.DirectionIn:
+		filter = " AND e.amount > 0"
+	case domain.DirectionOut:
+		filter = " AND e.amount < 0"
+	}
+	rows, err := r.q.Query(ctx,
+		`SELECT e.id, e.transaction_id, e.wallet_id, e.amount, e.balance_after, e.created_at,
+		        t.type, t.note, cw.id, cw.owner_id
+		   FROM ledger_entries e
+		   JOIN transactions t ON t.id = e.transaction_id
+		   LEFT JOIN wallets cw ON cw.id = CASE WHEN t.from_wallet_id = e.wallet_id
+		                                        THEN t.to_wallet_id ELSE t.from_wallet_id END
+		  WHERE e.wallet_id = $1`+filter+`
+		  ORDER BY e.id DESC LIMIT $2 OFFSET $3`, walletID, q.Limit, q.Offset)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.HistoryEntry, error) {
+		var (
+			h                 domain.HistoryEntry
+			typ               string
+			cpWallet, cpOwner *string
+		)
+		err := row.Scan(&h.ID, &h.TransactionID, &h.WalletID, &h.Amount, &h.BalanceAfter, &h.CreatedAt,
+			&typ, &h.Note, &cpWallet, &cpOwner)
+		h.Type = domain.TransactionType(typ)
+		h.CounterpartyWalletID = deref(cpWallet)
+		h.CounterpartyOwnerID = deref(cpOwner)
+		return h, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		entries = []domain.HistoryEntry{}
+	}
+	return entries, nil
 }
 
 func (r *TransactionRepository) queryEntries(ctx context.Context, sql string, args ...any) ([]domain.Entry, error) {

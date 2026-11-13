@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/GnuBurn/sds_wallet/internal/wallet/core/domain"
 	"github.com/GnuBurn/sds_wallet/internal/wallet/core/port"
@@ -15,7 +16,12 @@ import (
 
 const (
 	idempotencyHeader = "Idempotency-Key"
-	maxBodyBytes      = 1 << 20
+	// userIDHeader carries the authenticated user's ID. The API gateway
+	// verifies the JWT, sets this header from its `sub` claim, and must strip
+	// any value sent by the client.
+	userIDHeader    = "X-User-Id"
+	defaultCurrency = "THB"
+	maxBodyBytes    = 1 << 20
 )
 
 type Handler struct {
@@ -32,6 +38,7 @@ func NewHandler(svc port.WalletService, log *slog.Logger, streams context.Contex
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("POST /wallets", h.createWallet)
+	mux.HandleFunc("GET /wallets/me", h.getMyWallet)
 	mux.HandleFunc("GET /wallets/{id}", h.getWallet)
 	mux.HandleFunc("POST /wallets/{id}/deposit", h.deposit)
 	mux.HandleFunc("POST /wallets/{id}/withdraw", h.withdraw)
@@ -63,7 +70,21 @@ func (h *Handler) createWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getWallet(w http.ResponseWriter, r *http.Request) {
-	wallet, err := h.svc.GetWallet(r.Context(), r.PathValue("id"))
+	wallet, err := h.svc.GetWallet(r.Context(), userID(r), r.PathValue("id"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toWalletResponse(wallet))
+}
+
+// getMyWallet returns the caller's wallet (THB unless ?currency= is given).
+func (h *Handler) getMyWallet(w http.ResponseWriter, r *http.Request) {
+	currency := r.URL.Query().Get("currency")
+	if currency == "" {
+		currency = defaultCurrency
+	}
+	wallet, err := h.svc.GetWalletByOwner(r.Context(), userID(r), currency)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -87,6 +108,7 @@ func (h *Handler) moneyOp(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	tx, err := op(r.Context(), port.MoneyCmd{
+		UserID:         userID(r),
 		WalletID:       r.PathValue("id"),
 		Amount:         req.Amount,
 		IdempotencyKey: r.Header.Get(idempotencyHeader),
@@ -104,9 +126,11 @@ func (h *Handler) transfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx, err := h.svc.Transfer(r.Context(), port.TransferCmd{
+		UserID:         userID(r),
 		FromWalletID:   req.FromWalletID,
 		ToWalletID:     req.ToWalletID,
 		Amount:         req.Amount,
+		Note:           req.Note,
 		IdempotencyKey: r.Header.Get(idempotencyHeader),
 	})
 	if err != nil {
@@ -117,14 +141,30 @@ func (h *Handler) transfer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	entries, err := h.svc.ListEntries(r.Context(), r.PathValue("id"), limit, offset)
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+	direction := domain.EntryDirection(query.Get("direction"))
+	switch direction {
+	case domain.DirectionAll, domain.DirectionIn, domain.DirectionOut:
+	default:
+		writeError(w, http.StatusBadRequest, "direction must be in or out")
+		return
+	}
+	entries, err := h.svc.ListEntries(r.Context(), userID(r), r.PathValue("id"), port.EntryQuery{
+		Limit:     limit,
+		Offset:    offset,
+		Direction: direction,
+	})
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": toEntryResponses(entries)})
+	writeJSON(w, http.StatusOK, map[string]any{"entries": toHistoryResponses(entries)})
+}
+
+func userID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get(userIDHeader))
 }
 
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -145,6 +185,10 @@ func (h *Handler) decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := http.StatusInternalServerError
 	switch {
+	case errors.Is(err, domain.ErrUnauthenticated):
+		status = http.StatusUnauthorized
+	case errors.Is(err, domain.ErrForbidden):
+		status = http.StatusForbidden
 	case errors.Is(err, domain.ErrWalletNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, domain.ErrWalletExists),
@@ -159,6 +203,7 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, domain.ErrInvalidCurrency),
 		errors.Is(err, domain.ErrInvalidOwner),
 		errors.Is(err, domain.ErrSameWallet),
+		errors.Is(err, domain.ErrNoteTooLong),
 		errors.Is(err, domain.ErrMissingIdempotencyKey):
 		status = http.StatusBadRequest
 	}

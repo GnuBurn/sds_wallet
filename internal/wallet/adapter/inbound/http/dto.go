@@ -22,6 +22,7 @@ type transferRequest struct {
 	FromWalletID string `json:"from_wallet_id"`
 	ToWalletID   string `json:"to_wallet_id"`
 	Amount       int64  `json:"amount"`
+	Note         string `json:"note,omitempty"`
 }
 
 type walletResponse struct {
@@ -44,6 +45,16 @@ type entryResponse struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// historyEntryResponse is an entry plus details of its transaction, so the
+// app can show "Sent to bob" instead of "Money out".
+type historyEntryResponse struct {
+	entryResponse
+	Type                 string `json:"type"`
+	Note                 string `json:"note,omitempty"`
+	CounterpartyWalletID string `json:"counterparty_wallet_id,omitempty"`
+	CounterpartyOwnerID  string `json:"counterparty_owner_id,omitempty"`
+}
+
 type transactionResponse struct {
 	ID             string          `json:"id"`
 	IdempotencyKey string          `json:"idempotency_key"`
@@ -52,6 +63,7 @@ type transactionResponse struct {
 	Currency       string          `json:"currency"`
 	FromWalletID   string          `json:"from_wallet_id,omitempty"`
 	ToWalletID     string          `json:"to_wallet_id,omitempty"`
+	Note           string          `json:"note,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	Entries        []entryResponse `json:"entries"`
 }
@@ -83,16 +95,34 @@ func toWalletResponse(w *domain.Wallet) walletResponse {
 	}
 }
 
+func toEntryResponse(e domain.Entry) entryResponse {
+	return entryResponse{
+		ID:            e.ID,
+		TransactionID: e.TransactionID,
+		WalletID:      e.WalletID,
+		Amount:        e.Amount,
+		BalanceAfter:  e.BalanceAfter,
+		CreatedAt:     e.CreatedAt.UTC(),
+	}
+}
+
 func toEntryResponses(entries []domain.Entry) []entryResponse {
 	out := make([]entryResponse, len(entries))
 	for i, e := range entries {
-		out[i] = entryResponse{
-			ID:            e.ID,
-			TransactionID: e.TransactionID,
-			WalletID:      e.WalletID,
-			Amount:        e.Amount,
-			BalanceAfter:  e.BalanceAfter,
-			CreatedAt:     e.CreatedAt.UTC(),
+		out[i] = toEntryResponse(e)
+	}
+	return out
+}
+
+func toHistoryResponses(entries []domain.HistoryEntry) []historyEntryResponse {
+	out := make([]historyEntryResponse, len(entries))
+	for i, e := range entries {
+		out[i] = historyEntryResponse{
+			entryResponse:        toEntryResponse(e.Entry),
+			Type:                 string(e.Type),
+			Note:                 e.Note,
+			CounterpartyWalletID: e.CounterpartyWalletID,
+			CounterpartyOwnerID:  e.CounterpartyOwnerID,
 		}
 	}
 	return out
@@ -107,6 +137,7 @@ func toTransactionResponse(t *domain.Transaction) transactionResponse {
 		Currency:       string(t.Currency),
 		FromWalletID:   t.FromWalletID,
 		ToWalletID:     t.ToWalletID,
+		Note:           t.Note,
 		CreatedAt:      t.CreatedAt.UTC(),
 		Entries:        toEntryResponses(t.Entries),
 	}

@@ -38,17 +38,21 @@ func (r *WalletRepository) Get(ctx context.Context, id string) (*domain.Wallet, 
 	return r.get(ctx, `SELECT `+walletColumns+` FROM wallets WHERE id = $1`, id)
 }
 
+func (r *WalletRepository) GetByOwner(ctx context.Context, ownerID string, currency domain.Currency) (*domain.Wallet, error) {
+	return r.get(ctx, `SELECT `+walletColumns+` FROM wallets WHERE owner_id = $1 AND currency = $2`, ownerID, string(currency))
+}
+
 func (r *WalletRepository) GetForUpdate(ctx context.Context, id string) (*domain.Wallet, error) {
 	return r.get(ctx, `SELECT `+walletColumns+` FROM wallets WHERE id = $1 FOR UPDATE`, id)
 }
 
-func (r *WalletRepository) get(ctx context.Context, sql, id string) (*domain.Wallet, error) {
+func (r *WalletRepository) get(ctx context.Context, sql string, args ...any) (*domain.Wallet, error) {
 	var (
 		w        domain.Wallet
 		currency string
 		status   string
 	)
-	err := r.q.QueryRow(ctx, sql, id).Scan(
+	err := r.q.QueryRow(ctx, sql, args...).Scan(
 		&w.ID, &w.OwnerID, &currency, &w.Balance, &status, &w.Version, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

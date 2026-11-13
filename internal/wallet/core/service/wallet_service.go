@@ -52,30 +52,60 @@ func (s *WalletService) CreateWallet(ctx context.Context, cmd port.CreateWalletC
 	return w, nil
 }
 
-func (s *WalletService) GetWallet(ctx context.Context, id string) (*domain.Wallet, error) {
-	return s.d.Wallets.Get(ctx, id)
+func (s *WalletService) GetWallet(ctx context.Context, userID, id string) (*domain.Wallet, error) {
+	return s.authorize(ctx, userID, id)
 }
 
-func (s *WalletService) ListEntries(ctx context.Context, walletID string, limit, offset int) ([]domain.Entry, error) {
-	if _, err := s.d.Wallets.Get(ctx, walletID); err != nil {
+func (s *WalletService) GetWalletByOwner(ctx context.Context, userID, currency string) (*domain.Wallet, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, domain.ErrUnauthenticated
+	}
+	cur, err := domain.ParseCurrency(currency)
+	if err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = defaultPageSize
-	}
-	limit = min(limit, maxPageSize)
-	offset = max(offset, 0)
-	return s.d.Transactions.ListEntries(ctx, walletID, limit, offset)
+	return s.d.Wallets.GetByOwner(ctx, userID, cur)
 }
 
-func (s *WalletService) SubscribeBalance(ctx context.Context, walletID string) (<-chan domain.BalanceChanged, error) {
-	if _, err := s.d.Wallets.Get(ctx, walletID); err != nil {
+func (s *WalletService) ListEntries(ctx context.Context, userID, walletID string, q port.EntryQuery) ([]domain.HistoryEntry, error) {
+	if _, err := s.authorize(ctx, userID, walletID); err != nil {
+		return nil, err
+	}
+	if q.Limit <= 0 {
+		q.Limit = defaultPageSize
+	}
+	q.Limit = min(q.Limit, maxPageSize)
+	q.Offset = max(q.Offset, 0)
+	return s.d.Transactions.ListEntries(ctx, walletID, q)
+}
+
+func (s *WalletService) SubscribeBalance(ctx context.Context, userID, walletID string) (<-chan domain.BalanceChanged, error) {
+	if _, err := s.authorize(ctx, userID, walletID); err != nil {
 		return nil, err
 	}
 	return s.d.Subscriber.SubscribeBalance(ctx, walletID)
 }
 
+// authorize loads the wallet and checks that userID owns it. A wallet's
+// owner never changes, so checking outside the unit of work is safe.
+func (s *WalletService) authorize(ctx context.Context, userID, walletID string) (*domain.Wallet, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, domain.ErrUnauthenticated
+	}
+	w, err := s.d.Wallets.Get(ctx, walletID)
+	if err != nil {
+		return nil, err
+	}
+	if w.OwnerID != userID {
+		return nil, domain.ErrForbidden
+	}
+	return w, nil
+}
+
 func (s *WalletService) Deposit(ctx context.Context, cmd port.MoneyCmd) (*domain.Transaction, error) {
+	if _, err := s.authorize(ctx, cmd.UserID, cmd.WalletID); err != nil {
+		return nil, err
+	}
 	req := &domain.Transaction{
 		IdempotencyKey: cmd.IdempotencyKey,
 		Type:           domain.TxDeposit,
@@ -96,6 +126,9 @@ func (s *WalletService) Deposit(ctx context.Context, cmd port.MoneyCmd) (*domain
 }
 
 func (s *WalletService) Withdraw(ctx context.Context, cmd port.MoneyCmd) (*domain.Transaction, error) {
+	if _, err := s.authorize(ctx, cmd.UserID, cmd.WalletID); err != nil {
+		return nil, err
+	}
 	req := &domain.Transaction{
 		IdempotencyKey: cmd.IdempotencyKey,
 		Type:           domain.TxWithdrawal,
@@ -119,12 +152,20 @@ func (s *WalletService) Transfer(ctx context.Context, cmd port.TransferCmd) (*do
 	if cmd.FromWalletID == cmd.ToWalletID {
 		return nil, domain.ErrSameWallet
 	}
+	note, err := domain.NormalizeNote(cmd.Note)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.authorize(ctx, cmd.UserID, cmd.FromWalletID); err != nil {
+		return nil, err
+	}
 	req := &domain.Transaction{
 		IdempotencyKey: cmd.IdempotencyKey,
 		Type:           domain.TxTransfer,
 		Amount:         cmd.Amount,
 		FromWalletID:   cmd.FromWalletID,
 		ToWalletID:     cmd.ToWalletID,
+		Note:           note,
 	}
 	return s.execute(ctx, req, func(ctx context.Context, r port.Repositories, tx *domain.Transaction) error {
 		// Lock wallets in a fixed order so concurrent opposite transfers

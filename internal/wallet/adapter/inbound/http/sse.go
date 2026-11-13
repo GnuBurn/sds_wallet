@@ -21,14 +21,15 @@ const heartbeatInterval = 15 * time.Second
 func (h *Handler) streamBalance(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	walletID := r.PathValue("id")
+	user := userID(r)
 
 	// Subscribe before reading the snapshot so no change is missed in between.
-	events, err := h.svc.SubscribeBalance(ctx, walletID)
+	events, err := h.svc.SubscribeBalance(ctx, user, walletID)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	wallet, err := h.svc.GetWallet(ctx, walletID)
+	wallet, err := h.svc.GetWallet(ctx, user, walletID)
 	if err != nil {
 		h.fail(w, r, err)
 		return

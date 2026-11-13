@@ -67,6 +67,15 @@ func (m *memStore) Get(_ context.Context, id string) (*domain.Wallet, error) {
 	return &w, nil
 }
 
+func (m *memStore) GetByOwner(_ context.Context, ownerID string, currency domain.Currency) (*domain.Wallet, error) {
+	for _, w := range m.wallets {
+		if w.OwnerID == ownerID && w.Currency == currency {
+			return &w, nil
+		}
+	}
+	return nil, domain.ErrWalletNotFound
+}
+
 func (m *memStore) GetForUpdate(ctx context.Context, id string) (*domain.Wallet, error) {
 	return m.Get(ctx, id)
 }
@@ -99,13 +108,24 @@ func (r memTxRepo) FindByIdempotencyKey(_ context.Context, key string) (*domain.
 	return &tx, nil
 }
 
-func (r memTxRepo) ListEntries(_ context.Context, walletID string, limit, offset int) ([]domain.Entry, error) {
-	var out []domain.Entry
+func (r memTxRepo) ListEntries(_ context.Context, walletID string, q port.EntryQuery) ([]domain.HistoryEntry, error) {
+	var out []domain.HistoryEntry
 	for _, tx := range r.txs {
 		for _, e := range tx.Entries {
-			if e.WalletID == walletID {
-				out = append(out, e)
+			if e.WalletID != walletID ||
+				(q.Direction == domain.DirectionIn && e.Amount < 0) ||
+				(q.Direction == domain.DirectionOut && e.Amount > 0) {
+				continue
 			}
+			h := domain.HistoryEntry{Entry: e, Type: tx.Type, Note: tx.Note}
+			if tx.Type == domain.TxTransfer {
+				h.CounterpartyWalletID = tx.FromWalletID
+				if tx.FromWalletID == walletID {
+					h.CounterpartyWalletID = tx.ToWalletID
+				}
+				h.CounterpartyOwnerID = r.wallets[h.CounterpartyWalletID].OwnerID
+			}
+			out = append(out, h)
 		}
 	}
 	return out, nil

@@ -11,6 +11,7 @@ import (
 type WalletRepository interface {
 	Create(ctx context.Context, w *domain.Wallet) error
 	Get(ctx context.Context, id string) (*domain.Wallet, error)
+	GetByOwner(ctx context.Context, ownerID string, currency domain.Currency) (*domain.Wallet, error)
 	// GetForUpdate loads the wallet and locks it until the unit of work ends.
 	GetForUpdate(ctx context.Context, id string) (*domain.Wallet, error)
 	Update(ctx context.Context, w *domain.Wallet) error
@@ -21,7 +22,8 @@ type TransactionRepository interface {
 	// domain.ErrDuplicateIdempotencyKey if the key already exists.
 	Create(ctx context.Context, tx *domain.Transaction) error
 	FindByIdempotencyKey(ctx context.Context, key string) (*domain.Transaction, error)
-	ListEntries(ctx context.Context, walletID string, limit, offset int) ([]domain.Entry, error)
+	// ListEntries returns a wallet's history, newest first.
+	ListEntries(ctx context.Context, walletID string, q EntryQuery) ([]domain.HistoryEntry, error)
 }
 
 // EventPublisher publishes domain events. Implementations used inside a
