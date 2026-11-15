@@ -32,6 +32,9 @@ func requestLogger(log *slog.Logger, next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration", time.Since(start),
+			// Set by the gateway and passed on by payment-service, so one client
+			// request can be followed through every service's logs.
+			"request_id", r.Header.Get("X-Request-Id"),
 		)
 	})
 }

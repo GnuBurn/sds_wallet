@@ -58,6 +58,13 @@ func (h *Handler) createWallet(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &req) {
 		return
 	}
+	// Internal provisioning calls (auth-service, pos-service) come without
+	// X-User-Id. Through the gateway the header is always set, and a user may
+	// only create a wallet for themselves.
+	if caller := userID(r); caller != "" && caller != req.OwnerID {
+		h.fail(w, r, domain.ErrForbidden)
+		return
+	}
 	wallet, err := h.svc.CreateWallet(r.Context(), port.CreateWalletCmd{
 		OwnerID:  req.OwnerID,
 		Currency: req.Currency,

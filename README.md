@@ -129,7 +129,9 @@ Request bodies are JSON. Unknown fields are rejected with **400**.
 
 ### Create a wallet
 
-`POST /wallets`. Internal, for provisioning. No caller check.
+`POST /wallets`. For provisioning: auth-service calls it for every new user and
+pos-service for each restaurant. Internal calls send no `X-User-Id`. When the header
+is present (always, through the gateway), `owner_id` must equal it, otherwise **403**.
 
 ```json
 { "owner_id": "u_123", "currency": "THB" }

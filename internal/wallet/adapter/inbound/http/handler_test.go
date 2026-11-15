@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GnuBurn/sds_wallet/internal/wallet/core/domain"
@@ -90,5 +91,16 @@ func TestListEntriesDirection(t *testing.T) {
 	}
 	if rec := serve(t, svc, http.MethodGet, "/wallets/abc/entries?direction=sideways", "u_123"); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad direction: status = %d, want 400", rec.Code)
+	}
+}
+
+func TestCreateWalletForSomeoneElseIsForbidden(t *testing.T) {
+	h := NewHandler(&stubService{}, slog.New(slog.NewTextHandler(io.Discard, nil)), context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(`{"owner_id":"u_bob","currency":"THB"}`))
+	req.Header.Set(userIDHeader, "u_alice")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", rec.Code, rec.Body)
 	}
 }
